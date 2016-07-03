@@ -1743,6 +1743,7 @@ int bam_sort_core_ext(int is_by_qname, const char *fn, const char *prefix,
     samFile *fp;
     bam1_t *b, **buf;
     uint8_t *bam_array;
+    uintptr_t b_end_addr, b_size;
 
     if (n_threads < 2) n_threads = 1;
     g_is_by_qname = is_by_qname;
@@ -1767,32 +1768,45 @@ int bam_sort_core_ext(int is_by_qname, const char *fn, const char *prefix,
 
     }
     if ((buf = malloc(max_k * sizeof(bam1_t))) == NULL) {
-        print_error("sort", "couldn't allocate memory for buf_array");
+        print_error("sort", "couldn't allocate memory for buf array");
         goto err;
     }
     buf[0] = (bam1_t *)bam_array;
     // write sub files
     for (k = 0;;) {
-        b = buf[k];
-        b->m_data = INT_MAX; // ensure no realloc() in bam_read1()
-        b->data = b->fam_data; // for backwards compatibility
-        if ((ret = sam_read1(fp, header, b)) < 0) break;
-        ++k;
-        // if the next BAM record could cause the memory limit to be exceeded
-        if (((char *)(b + 1) + b->l_data + BGZF_MAX_BLOCK_SIZE > (char *)(bam_array + max_mem - 1))) {
+        if (k != -1) { // if not partial alignment record read
+            b = buf[k];
+            b->m_data = INT_MAX; // ensure no realloc() in bam_read1()
+            b->data = b->fam_data; // for backwards compatibility
+            if ((ret = sam_read1_core(fp, header, b)) < 0) break;
+        }
+        // sanity check to ensure the BAM record will fit into memory
+        b_size = sizeof(bam1_t) + b->l_data;
+        if (b_size > max_mem) {
+            print_error("sort", "not enough memory to store alignment (increase -m)");
+            ret = -1;
+            goto err;
+        }
+        b_end_addr = (uintptr_t)b + b_size;
+        // if the variable-length data in the current BAM record would cause the memory limit to be exceeded
+        if ((b_end_addr > (uintptr_t)(bam_array + max_mem - 1))) {
             n_files = sort_blocks(n_files, k, buf, prefix, header, n_threads);
             if (n_files < 0) {
                 ret = -1;
                 goto err;
             }
-            k = 0;
+            *buf[0] = *b; // copy fixed-length data to beginning of buffer
+            k = -1; // indicate partial alignment record read
         } else {
+            if ((ret = sam_read1_data(fp, header, b)) < 0) break;
+            k = (k == 0) ? 1 : k+1;
+            // NOTE: if there are no more records to be read, then this wastes space...
             if (k == max_k) {
                 max_k <<= 1;
                 buf = realloc(buf, max_k * sizeof(bam1_t*));
             }
             // store next BAM record in next 8-byte-aligned address after current BAM record
-            buf[k] = (bam1_t *)(((uintptr_t)b + sizeof(bam1_t) + b->l_data + 8 - 1) & ~((uintptr_t)(8 - 1)));
+            buf[k] = (bam1_t *)((b_end_addr + 8 - 1) & ~((uintptr_t)(8 - 1)));
         }
     }
     if (ret != -1) {
