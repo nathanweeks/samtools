@@ -1780,7 +1780,7 @@ int bam_sort_core_ext(int is_by_qname, const char *fn, const char *prefix,
             b->data = b->fam_data; // for backwards compatibility
             if ((ret = sam_read1_core(fp, header, b)) < 0) break;
         }
-        // sanity check to ensure the BAM record will fit into memory
+        // sanity check to ensure the BAM record can fit into allocated memory
         b_size = sizeof(bam1_t) + b->l_data;
         if (b_size > max_mem) {
             print_error("sort", "not enough memory to store alignment (increase -m)");
@@ -1800,13 +1800,21 @@ int bam_sort_core_ext(int is_by_qname, const char *fn, const char *prefix,
         } else {
             if ((ret = sam_read1_data(fp, header, b)) < 0) break;
             k = (k == 0) ? 1 : k+1;
-            // NOTE: if there are no more records to be read, then this wastes space...
-            if (k == max_k) {
-                max_k <<= 1;
-                buf = realloc(buf, max_k * sizeof(bam1_t*));
+            if ((b_end_addr + 0x50000 > (uintptr_t)(bam_array + max_mem - 1))) {
+                n_files = sort_blocks(n_files, k, buf, prefix, header, n_threads);
+                if (n_files < 0) {
+                    ret = -1;
+                    goto err;
+                }
+                k = 0;
+            } else {
+                if (k == max_k) {
+                    max_k <<= 1;
+                    buf = realloc(buf, max_k * sizeof(bam1_t*));
+                }
+                // store next BAM record in next 8-byte-aligned address after current BAM record
+                buf[k] = (bam1_t *)((b_end_addr + 8 - 1) & ~((uintptr_t)(8 - 1)));
             }
-            // store next BAM record in next 8-byte-aligned address after current BAM record
-            buf[k] = (bam1_t *)((b_end_addr + 8 - 1) & ~((uintptr_t)(8 - 1)));
         }
     }
     if (ret != -1) {
