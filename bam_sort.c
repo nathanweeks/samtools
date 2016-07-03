@@ -1778,9 +1778,9 @@ int bam_sort_core_ext(int is_by_qname, const char *fn, const char *prefix,
             b = buf[k];
             b->m_data = INT_MAX; // ensure no realloc() in bam_read1()
             b->data = b->fam_data; // for backwards compatibility
-            if ((ret = sam_read1_core(fp, header, b)) < 0) break;
+            if ((ret = sam_read1_l_data(fp, header, b)) < 0) break;
         }
-        // sanity check to ensure the BAM record can fit into allocated memory
+        // sanity check to ensure the alignment record can fit into allocated memory (bam_array)
         b_size = sizeof(bam1_t) + b->l_data;
         if (b_size > max_mem) {
             print_error("sort", "not enough memory to store alignment (increase -m)");
@@ -1788,7 +1788,7 @@ int bam_sort_core_ext(int is_by_qname, const char *fn, const char *prefix,
             goto err;
         }
         b_end_addr = (uintptr_t)b + b_size;
-        // if the variable-length data in the current BAM record would cause the memory limit to be exceeded
+        // if the data in the alignment record cannot fit at the current position in bam_array
         if ((b_end_addr > (uintptr_t)(bam_array + max_mem - 1))) {
             n_files = sort_blocks(n_files, k, buf, prefix, header, n_threads);
             if (n_files < 0) {
@@ -1800,7 +1800,8 @@ int bam_sort_core_ext(int is_by_qname, const char *fn, const char *prefix,
         } else {
             if ((ret = sam_read1_data(fp, header, b)) < 0) break;
             k = (k == 0) ? 1 : k+1;
-            if ((b_end_addr + 0x50000 > (uintptr_t)(bam_array + max_mem - 1))) {
+            // if next bam1_t (plus padding) won't fit in allocated array
+            if ((b_end_addr + sizeof(bam1_t) + 8 > (uintptr_t)(bam_array + max_mem - 1))) {
                 n_files = sort_blocks(n_files, k, buf, prefix, header, n_threads);
                 if (n_files < 0) {
                     ret = -1;
